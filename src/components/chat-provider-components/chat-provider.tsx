@@ -1,6 +1,3 @@
-// ChatProvider.tsx
-
-"use client";
 import React, { useEffect, useRef, useCallback, useState } from "react";
 import CodeBlock from "@/components/chat-provider-components/code-block";
 import {
@@ -15,7 +12,7 @@ import { lowlight } from "lowlight";
 import { Markdown as TipTapMkd } from "tiptap-markdown";
 import { FormatOutput } from "@/utils/shadow";
 import root from "react-shadow/styled-components";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/genai";
 import geminiZustand from "@/utils/mindbot-zustand";
 import { FaWandMagicSparkles } from "react-icons/fa6";
 import { createPortal } from "react-dom";
@@ -63,7 +60,7 @@ interface ChatProviderProps {
     userPrompt: string;
     imgName?: string;
     imgInfo: { imgSrc: string; imgAlt: string };
-    mindsearchActive: boolean;  // Added mindsearchActive prop
+    mindsearchActive: boolean;
 }
 
 const ChatProvider: React.FC<ChatProviderProps> = ({
@@ -72,7 +69,7 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
     userPrompt,
     imgName,
     imgInfo,
-    mindsearchActive,  // Destructured mindsearchActive prop
+    mindsearchActive,
 }) => {
     const { topLoader, setCurrChat, setTopLoader, currChat } = geminiZustand();
     const [dropdown, setDropdown] = useState(false);
@@ -85,35 +82,74 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
     const inputRef = useRef<HTMLInputElement>(null);
     const [initialPrompt, setInitialPrompt] = useState(userPrompt);
     const [promptModify, setPromptModify] = useState(false);
-    const [serperImages, setSerperImages] = useState<string[]>([]);  // New state for images
-    const [modificationTime, setModificationTime] = useState<number | null>(null); // State for response time
+    const [serperImages, setSerperImages] = useState<string[]>([]);
+    const [modificationTime, setModificationTime] = useState<number | null>(null);
+    const [thinkingText, setThinkingText] = useState<string | null>(null);
+    const [thinkingTime, setThinkingTime] = useState<number>(0);
+    const [isThinking, setIsThinking] = useState(false);
+    const [generatedImages, setGeneratedImages] = useState<string[]>([]);
+    const thinkingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
     const dropdownRef = useRef<HTMLDivElement>(null);
     const genAI = new GoogleGenerativeAI(process.env.NEXT_PUBLIC_API_KEY as string);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
+    useEffect(() => {
+        // Load saved images from localStorage
+        const savedImages = localStorage.getItem(`mindpaint_${chatUniqueId}`);
+        if (savedImages) {
+            setGeneratedImages(JSON.parse(savedImages));
+        }
+    }, [chatUniqueId]);
+
+    useEffect(() => {
+        // Save images to localStorage when they change
+        if (generatedImages.length > 0) {
+            localStorage.setItem(`mindpaint_${chatUniqueId}`, JSON.stringify(generatedImages));
+        }
+    }, [generatedImages, chatUniqueId]);
+
+    useEffect(() => {
+        if (isThinking) {
+            thinkingTimerRef.current = setInterval(() => {
+                setThinkingTime(prev => prev + 1);
+            }, 1000);
+        } else {
+            if (thinkingTimerRef.current) {
+                clearInterval(thinkingTimerRef.current);
+            }
+            setThinkingTime(0);
+        }
+
+        return () => {
+            if (thinkingTimerRef.current) {
+                clearInterval(thinkingTimerRef.current);
+            }
+        };
+    }, [isThinking]);
+
     const editor = useEditor({
         extensions,
         content: initialResponse,
-        // Removed onUpdate as it can cause a race condition and prevent quick updates.
     });
 
     const handleSelectNode = useCallback(() => {
-        if (!editor) return; // Ensure editor is initialized
+        if (!editor) return;
         const { state } = editor;
         const { from, to } = state.selection;
         const selectedNode = state.doc.textBetween(from, to, " ");
         setSelectedNode(selectedNode);
-    }, [editor]); // Add editor to useCallback dependencies
+    }, [editor]);
 
     const handlePrompt = useCallback(
         async (promptType: keyof typeof PROMPT_TYPES | "Custom") => {
-            if (!editor) return; // Ensure editor is initialized
+            if (!editor) return;
 
             let prompt;
             if (promptType === "Custom") {
-                prompt = `This is the whole response: ${initialResponse}. ${inputRef.current?.value
-                    } Specifically focus on this part: "${selectedNode}". Ensure the modified part aligns seamlessly with the rest of the response. Provide the entire modified response back, preserving the essential introductory and concluding phrases without adding any new non-contextual information.`;
+                prompt = `This is the whole response: ${initialResponse}. ${
+                    inputRef.current?.value
+                } Specifically focus on this part: "${selectedNode}". Ensure the modified part aligns seamlessly with the rest of the response. Provide the entire modified response back, preserving the essential introductory and concluding phrases without adding any new non-contextual information.`;
             } else {
                 const promptInstructions = {
                     Longer: "Lengthen",
@@ -131,58 +167,33 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
                     Counterargument: "Present a counterargument to",
                     Summary: "Summarize",
                 };
-                prompt = `This is the whole response: ${initialResponse}. ${promptInstructions[promptType]
-                    } a specific part of the response, specifically "${selectedNode}". Ensure it aligns seamlessly with the rest of the response. Provide the entire modified response back, preserving the essential introductory and concluding phrases without adding any new non-contextual information.`;
+                prompt = `This is the whole response: ${initialResponse}. ${
+                    promptInstructions[promptType]
+                } a specific part of the response, specifically "${selectedNode}". Ensure it aligns seamlessly with the rest of the response. Provide the entire modified response back, preserving the essential introductory and concluding phrases without adding any new non-contextual information.`;
             }
 
             try {
                 setUpdateLoader(true);
-                setModificationTime(null); // Reset time on new request
-                const startTime = performance.now(); // Record start time
-
-                // Optimistic Update: Immediately update the editor with a loading state.
-                setInitialResponse("Loading...");
-                editor.commands.setContent("Loading...");
+                setModificationTime(null);
+                const startTime = performance.now();
 
                 const result = await model.generateContent(prompt);
                 const response = await result.response;
-
-                const endTime = performance.now(); // Record end time
-                const duration = Math.round(endTime - startTime); // Calculate duration
-                setModificationTime(duration); // Set the response time state
-
-                if (!response) {
-                    console.error("Gemini API error: No response received");
-                    setInitialResponse("Error generating response.");
-                    editor.commands.setContent("Error generating response.");
-                    setModificationTime(null); // Clear time on error
-                    return;
-                }
-
                 const text = response.text();
 
-                if (!text) {
-                    console.error("Gemini API error: No text received in response");
-                    setInitialResponse("Error generating response.");
-                    editor.commands.setContent("Error generating response.");
-                    setModificationTime(null); // Clear time on error
-                    return;
-                }
+                const endTime = performance.now();
+                const duration = Math.round(endTime - startTime);
+                setModificationTime(duration);
 
-                // Immediately update the editor with the new content.
+                if (!text) throw new Error("Error while generating prompt");
+
                 setInitialResponse(text);
                 editor.commands.setContent(text);
 
-                // Asynchronous Update:  Update the database in the background.  This avoids blocking the UI.
                 updateResponse({ chatUniqueId, updatedResponse: text })
-                    .then(() => {
-                        // Optional: Handle success (e.g., logging).
-                    })
+                    .then(() => {})
                     .catch((error) => {
                         console.error("Error updating database:", error);
-                        setInitialResponse("Error generating response."); // Set error message on failure
-                        editor.commands.setContent("Error generating response."); // Update editor with error message
-                        setModificationTime(null); // Clear time on error
                     });
 
                 setDropdown(false);
@@ -190,13 +201,21 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
                 console.error("Error generating response:", error);
                 setInitialResponse("Error generating response.");
                 editor.commands.setContent("Error generating response.");
-                setModificationTime(null); // Clear time on error
             } finally {
                 setUpdateLoader(false);
             }
         },
         [editor, initialResponse, selectedNode, chatUniqueId, model]
     );
+
+    const generateImages = async (prompt: string) => {
+        const imageUrls = [];
+        for (let i = 0; i < 2; i++) {
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?nologo=true&model=flux-pro&seed=${Math.random()}`;
+            imageUrls.push(imageUrl);
+        }
+        setGeneratedImages(imageUrls);
+    };
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -223,6 +242,7 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
             setDropdown(true);
         }
     };
+
     const DropdownContent = () => (
         <div
             className={`${updateLoader && "dropdown-loader pointer-events-none "
@@ -265,6 +285,7 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
             setInitialPrompt(userPrompt);
         }
     };
+
     const handleTxtToSpeech = () => {
         return editor?.getText() as string;
     };
@@ -283,11 +304,11 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
                     className={`prompt-area pt-1 text-base border-2 resize-none rounded-md bg-transparent outline-none ${promptModify
                         ? " max-h-none w-full !p-3 focus:border-accentBlue/70  border-accentGray "
                         : " max-h-40 border-transparent"
-                    }`}
+                        }`}
                     readOnly={!promptModify}
                     onChange={(e) => setInitialPrompt(e.target.value)}
                     value={initialPrompt}
-                    style={{ width: '85%' }}  // Set the width of the textarea to 85%
+                    style={{ width: '85%' }}
                 />
 
                 <ReactTooltip tipData="edit prompt" place="bottom">
@@ -304,7 +325,6 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
             </div>
             {promptModify && (
                 <div className="flex item-center gap-2 p-10 pt-2">
-                    {" "}
                     <DevButton
                         onClick={() => {
                             setInitialPrompt(userPrompt);
@@ -329,30 +349,46 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
                 </div>
             )}
 
-            {/*  SERPER IMAGES DISPLAY (Between user prompt and LLM response) */}
-            {mindsearchActive && serperImages.length > 0 && (
-                <div className="flex justify-around mt-4">
-                    {serperImages.map((imageUrl, index) => (
-                        <Image
-                            key={index}
-                            src={imageUrl}
-                            alt={`Serper Image ${index + 1}`}
-                            width={125}
-                            height={125}
-                            className="object-cover rounded-md"
-                        />
-                    ))}
-                </div>
-            )}
-
             {imgName && (
-                <div className="w-full mt-3 overflow-hidden ">
+                <div className="w-full mt-3 overflow-hidden">
                     <div className="p-4 w-fit max-w-full bg-rtlLight dark:bg-rtlDark rounded-md flex items-start gap-2">
                         <FaRegFileAlt className="text-4xl" />
                         <p className="text-lg truncate"> {imgName}</p>
                     </div>
                 </div>
             )}
+
+            {/* Display generated images if available */}
+            {generatedImages.length > 0 && (
+                <div className="w-full flex justify-center gap-4 mt-4">
+                    {generatedImages.map((url, index) => (
+                        <div key={index} className="relative w-1/2">
+                            <img
+                                src={url}
+                                alt={`Generated Image ${index + 1}`}
+                                className="w-full h-48 object-cover rounded-2xl"
+                            />
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {isThinking && thinkingText && (
+                <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                    <div className="flex justify-between items-center mb-2">
+                        <h3 className="text-lg font-semibold text-blue-600 dark:text-blue-400">
+                            MindThink Analysis
+                        </h3>
+                        <span className="text-sm text-gray-600 dark:text-gray-400">
+                            {thinkingTime}s
+                        </span>
+                    </div>
+                    <div className="prose dark:prose-invert max-w-none">
+                        {thinkingText}
+                    </div>
+                </div>
+            )}
+
             <div className="w-full flex justify-end h-16 items-center">
                 <TextToSpeech handleTxtToSpeech={handleTxtToSpeech} />
             </div>
@@ -393,7 +429,6 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
                 </root.div>
             </div>
 
-            {/* Response Time Label */}
             {modificationTime !== null && (
                 <div className="w-full flex justify-end items-center mt-1 pr-1 gap-1">
                     <FiClock className="text-gray-500 dark:text-gray-400" />
@@ -406,7 +441,7 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
             <ChatActionsBtns
                 chatID={chatUniqueId}
                 userPrompt={userPrompt}
-                llmResponse={initialResponse} // Use updated state for sharing
+                llmResponse={initialResponse}
                 shareMsg={`user prompt: ${userPrompt} \n\n MindBot response:${handleTxtToSpeech()}`}
             />
 
