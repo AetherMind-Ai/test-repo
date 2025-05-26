@@ -211,7 +211,7 @@ const ChatProvider: React.FC<ChatProviderProps> = ({
     const generateImages = async (prompt: string) => {
         const imageUrls = [];
         for (let i = 0; i < 2; i++) {
-            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?nologo=true&model=flux-pro&seed=${Math.random()}`;
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?nologo=true&model=flux`;
             imageUrls.push(imageUrl);
         }
         setGeneratedImages(imageUrls);
